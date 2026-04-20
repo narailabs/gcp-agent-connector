@@ -52,6 +52,10 @@ const result = await fetch("list_services", { project_id: "acme-prod-123" });
 - No wiki, documentation, or diagramming — output is a pure JSON envelope.
 - The connector never invokes `gcloud config set` or anything that mutates local state.
 
+## Claude Code plugin
+
+A ready-to-install Claude Code plugin lives at [`plugin/`](./plugin). It adds a `gcp-agent` skill and a `/gcp-agent <action> <params-json>` slash command, wrapping this connector. The plugin is excluded from the npm tarball via `.npmignore`; Claude Code marketplaces point directly at the `plugin/` subdirectory of this repo.
+
 ## License
 
 MIT
