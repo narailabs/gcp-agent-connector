@@ -1,0 +1,50 @@
+{
+  "name": "@narai/gcp-agent-connector",
+  "version": "1.0.0",
+  "description": "Read-only GCP connector: Cloud Run, Cloud SQL, Pub/Sub, Cloud Logging. Shells out to gcloud/bq; ships a JSON-envelope CLI and a library API. Zero doc-wiki coupling.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./cli": "./dist/cli.js"
+  },
+  "bin": {
+    "gcp-agent-connector": "./dist/cli.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@narai/connector-toolkit": "file:../connector-toolkit"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.39",
+    "typescript": "^5.9.3",
+    "vitest": "^3.0.0"
+  },
+  "license": "MIT",
+  "keywords": [
+    "gcp",
+    "connector",
+    "claude",
+    "agent",
+    "cloud-run",
+    "cloud-sql",
+    "pubsub"
+  ]
+}

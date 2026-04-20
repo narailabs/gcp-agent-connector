@@ -1,0 +1,429 @@
+#!/usr/bin/env node
+/**
+ * gcp-agent-connector CLI.
+ *
+ * Read-only GCP surface. Uses Application Default Credentials by
+ * shelling out to `gcloud` / `bq` via `execFileSync`. When those
+ * binaries are unavailable, returns a CONFIG_ERROR envelope.
+ *
+ * Library usage:
+ *     import { fetch } from "@narai/gcp-agent-connector";
+ *     const result = await fetch("list_services", { project_id: "acme-prod-123" });
+ */
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
+import { parseAgentArgs, type ParsedAgentArgs } from "@narai/connector-toolkit";
+import {
+  GcpClient,
+  detectGcloudAvailable,
+  type GcpClientOptions,
+  type GcpResult,
+} from "./lib/gcp_client.js";
+
+export const VALID_ACTIONS: ReadonlySet<string> = new Set([
+  "list_services",
+  "describe_db",
+  "list_topics",
+  "query_logs",
+]);
+
+const MAX_RESULTS_DEFAULT = 100;
+const MAX_RESULTS_CAP = 1000;
+const MAX_LOG_HOURS = 168;
+
+const PROJECT_ID_PATTERN = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
+
+export type FetchResult = Record<string, unknown>;
+type Params = Record<string, unknown>;
+
+function toInt(value: unknown, fallback: number): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.trunc(value);
+  }
+  if (typeof value === "string") {
+    const n = parseInt(value, 10);
+    if (Number.isFinite(n)) return n;
+  }
+  return fallback;
+}
+
+function validateProjectId(projectId: string): string {
+  if (!PROJECT_ID_PATTERN.test(projectId)) {
+    throw new Error(
+      `Invalid project_id '${projectId}' — must be 6-30 lowercase letters, digits, hyphens`,
+    );
+  }
+  return projectId;
+}
+
+interface ListServicesValidated {
+  project_id: string;
+}
+interface DescribeDbValidated {
+  project_id: string;
+  instance_id: string;
+  database: string;
+}
+interface ListTopicsValidated {
+  project_id: string;
+}
+interface QueryLogsValidated {
+  project_id: string;
+  filter: string;
+  hours: number;
+  max_results: number;
+}
+
+function validateListServices(params: Params): ListServicesValidated {
+  const raw = params["project_id"];
+  return { project_id: validateProjectId(typeof raw === "string" ? raw : "") };
+}
+
+function validateDescribeDb(params: Params): DescribeDbValidated {
+  const raw = params["project_id"];
+  const projectId = validateProjectId(typeof raw === "string" ? raw : "");
+  const instIdRaw = params["instance_id"];
+  if (!instIdRaw || typeof instIdRaw !== "string") {
+    throw new Error("describe_db requires a non-empty 'instance_id' string");
+  }
+  const dbRaw = params["database"] ?? "";
+  const database = typeof dbRaw === "string" ? dbRaw : "";
+  return { project_id: projectId, instance_id: instIdRaw, database };
+}
+
+function validateListTopics(params: Params): ListTopicsValidated {
+  const raw = params["project_id"];
+  return { project_id: validateProjectId(typeof raw === "string" ? raw : "") };
+}
+
+function validateQueryLogs(params: Params): QueryLogsValidated {
+  const raw = params["project_id"];
+  const projectId = validateProjectId(typeof raw === "string" ? raw : "");
+  const filterRaw = params["filter"];
+  if (!filterRaw || typeof filterRaw !== "string") {
+    throw new Error("query_logs requires a non-empty 'filter' string");
+  }
+  if (
+    filterRaw.includes(";") ||
+    filterRaw.includes("'") ||
+    filterRaw.includes('"')
+  ) {
+    throw new Error(
+      "Filter contains forbidden characters — no semicolons or quotes allowed",
+    );
+  }
+  const hours = Math.min(toInt(params["hours"], 24), MAX_LOG_HOURS);
+  const maxResults = Math.min(
+    toInt(params["max_results"], MAX_RESULTS_DEFAULT),
+    MAX_RESULTS_CAP,
+  );
+  return {
+    project_id: projectId,
+    filter: filterRaw.trim(),
+    hours,
+    max_results: maxResults,
+  };
+}
+
+function errorFromClient<T>(
+  result: Extract<GcpResult<T>, { ok: false }>,
+  action: string,
+): FetchResult {
+  const codeMap: Record<string, string> = {
+    INVALID_PROJECT: "VALIDATION_ERROR",
+    INVALID_INSTANCE: "VALIDATION_ERROR",
+    INVALID_FILTER: "VALIDATION_ERROR",
+    FORBIDDEN_BINARY: "VALIDATION_ERROR",
+    FORBIDDEN_COMMAND: "VALIDATION_ERROR",
+    UNSAFE_ARG: "VALIDATION_ERROR",
+    WRITE_FORBIDDEN: "VALIDATION_ERROR",
+    EXEC_ERROR: "CONNECTION_ERROR",
+    TIMEOUT: "TIMEOUT",
+    PARSE_ERROR: "CONNECTION_ERROR",
+  };
+  return {
+    status: "error",
+    action,
+    error_code: codeMap[result.code] ?? "CONNECTION_ERROR",
+    message: result.message,
+    retriable: result.retriable,
+  };
+}
+
+async function fetchListServices(
+  client: GcpClient,
+  v: ListServicesValidated,
+): Promise<FetchResult> {
+  const result = await client.listServices(v.project_id);
+  if (!result.ok) return errorFromClient(result, "list_services");
+  return {
+    status: "success",
+    action: "list_services",
+    data: {
+      project_id: v.project_id,
+      services: result.data.map((s) => ({
+        name: s.name ?? "",
+        title: s.config?.title ?? "",
+        state: s.state ?? "",
+      })),
+      service_count: result.data.length,
+    },
+  };
+}
+
+async function fetchDescribeDb(
+  client: GcpClient,
+  v: DescribeDbValidated,
+): Promise<FetchResult> {
+  const result = await client.describeSqlInstance(v.project_id, v.instance_id);
+  if (!result.ok) return errorFromClient(result, "describe_db");
+  const inst = result.data;
+  const [engine, version] = (inst.databaseVersion ?? "").split("_");
+  return {
+    status: "success",
+    action: "describe_db",
+    data: {
+      project_id: v.project_id,
+      instance_id: v.instance_id,
+      database: v.database,
+      engine: (engine ?? "").toLowerCase(),
+      version: version ?? "",
+      tier: inst.settings?.tier ?? "",
+      region: inst.region ?? "",
+      state: inst.state ?? "",
+      tables: [],
+    },
+  };
+}
+
+async function fetchListTopics(
+  client: GcpClient,
+  v: ListTopicsValidated,
+): Promise<FetchResult> {
+  const result = await client.listPubsubTopics(v.project_id);
+  if (!result.ok) return errorFromClient(result, "list_topics");
+  return {
+    status: "success",
+    action: "list_topics",
+    data: {
+      project_id: v.project_id,
+      topics: result.data.map((t) => t.name ?? ""),
+      topic_count: result.data.length,
+    },
+  };
+}
+
+async function fetchQueryLogs(
+  client: GcpClient,
+  v: QueryLogsValidated,
+): Promise<FetchResult> {
+  const result = await client.queryLogs(
+    v.project_id,
+    v.filter,
+    v.hours,
+    v.max_results,
+  );
+  if (!result.ok) return errorFromClient(result, "query_logs");
+  return {
+    status: "success",
+    action: "query_logs",
+    data: {
+      project_id: v.project_id,
+      filter: v.filter,
+      hours: v.hours,
+      entries: result.data.map((e) => ({
+        timestamp: e.timestamp ?? null,
+        severity: e.severity ?? "",
+        message: e.textPayload ?? "",
+      })),
+      entry_count: result.data.length,
+    },
+    truncated: result.data.length >= v.max_results,
+  };
+}
+
+function missingGcloudError(action: string): FetchResult {
+  return {
+    status: "error",
+    action,
+    error_code: "CONFIG_ERROR",
+    message:
+      "gcloud CLI not available on PATH. Install Google Cloud SDK and " +
+      "authenticate with Application Default Credentials (gcloud auth " +
+      "application-default login).",
+    retriable: false,
+  };
+}
+
+export interface FetchOptions {
+  client?: GcpClient;
+  clientOptions?: GcpClientOptions;
+}
+
+export async function fetch(
+  action: string,
+  params: Params | null = null,
+  options: FetchOptions = {},
+): Promise<FetchResult> {
+  if (!VALID_ACTIONS.has(action)) {
+    const sorted = [...VALID_ACTIONS].sort();
+    return {
+      status: "error",
+      error_code: "VALIDATION_ERROR",
+      message:
+        `Unknown action '${action}' — expected one of ` +
+        `[${sorted.map((s) => `'${s}'`).join(", ")}]`,
+    };
+  }
+
+  const p: Params = params ?? {};
+  let validated:
+    | ListServicesValidated
+    | DescribeDbValidated
+    | ListTopicsValidated
+    | QueryLogsValidated;
+  try {
+    switch (action) {
+      case "list_services":
+        validated = validateListServices(p);
+        break;
+      case "describe_db":
+        validated = validateDescribeDb(p);
+        break;
+      case "list_topics":
+        validated = validateListTopics(p);
+        break;
+      case "query_logs":
+        validated = validateQueryLogs(p);
+        break;
+      default:
+        throw new Error("unreachable");
+    }
+  } catch (exc) {
+    return {
+      status: "error",
+      error_code: "VALIDATION_ERROR",
+      message: (exc as Error).message,
+    };
+  }
+
+  let client = options.client;
+  if (!client) {
+    if (options.clientOptions) {
+      client = new GcpClient(options.clientOptions);
+    } else if (!detectGcloudAvailable()) {
+      return missingGcloudError(action);
+    } else {
+      client = new GcpClient();
+    }
+  }
+
+  try {
+    switch (action) {
+      case "list_services":
+        return await fetchListServices(client, validated as ListServicesValidated);
+      case "describe_db":
+        return await fetchDescribeDb(client, validated as DescribeDbValidated);
+      case "list_topics":
+        return await fetchListTopics(client, validated as ListTopicsValidated);
+      case "query_logs":
+        return await fetchQueryLogs(client, validated as QueryLogsValidated);
+      default:
+        throw new Error("unreachable action");
+    }
+  } catch (exc) {
+    return {
+      status: "error",
+      error_code: "CONNECTION_ERROR",
+      message: `GCP API call failed: ${(exc as Error).message}`,
+    };
+  }
+}
+
+type ParsedArgs = ParsedAgentArgs;
+const parseArgs = (argv: readonly string[]): ParsedArgs =>
+  parseAgentArgs(argv, { flags: ["action", "params"] });
+
+const HELP_TEXT = `usage: gcp-agent-connector [-h] --action {describe_db,list_services,list_topics,query_logs} [--params PARAMS]
+
+Read-only GCP connector
+
+options:
+  -h, --help            show this help message and exit
+  --action {describe_db,list_services,list_topics,query_logs}
+                        Action to perform
+  --params PARAMS       JSON string of action parameters
+`;
+
+export async function main(
+  argv: readonly string[] = process.argv.slice(2),
+): Promise<number> {
+  let args: ParsedArgs;
+  try {
+    args = parseArgs(argv);
+  } catch (e) {
+    process.stderr.write(`${(e as Error).message}\n`);
+    return 2;
+  }
+
+  if (args.help) {
+    process.stdout.write(HELP_TEXT);
+    return 0;
+  }
+
+  if (!args.action) {
+    process.stderr.write("the following arguments are required: --action\n");
+    return 2;
+  }
+
+  if (!VALID_ACTIONS.has(args.action)) {
+    const sorted = [...VALID_ACTIONS].sort();
+    process.stderr.write(
+      `argument --action: invalid choice: '${args.action}' (choose from ${sorted.map((s) => `'${s}'`).join(", ")})\n`,
+    );
+    return 2;
+  }
+
+  const paramsRaw = args.params ?? "{}";
+  let params: Params;
+  try {
+    const parsed: unknown = JSON.parse(paramsRaw);
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("params must be a JSON object");
+    }
+    params = parsed as Params;
+  } catch (e) {
+    const result: FetchResult = {
+      status: "error",
+      error_code: "VALIDATION_ERROR",
+      message: `Invalid JSON in --params: ${(e as Error).message}`,
+    };
+    process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+    return 1;
+  }
+
+  const result = await fetch(args.action, params);
+  process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+
+  if (result["status"] !== "success") {
+    return 1;
+  }
+  return 0;
+}
+
+function isCliEntry(): boolean {
+  const argv1 = process.argv[1];
+  if (!argv1) return false;
+  try {
+    const scriptPath = fs.realpathSync(path.resolve(argv1));
+    const modulePath = fs.realpathSync(fileURLToPath(import.meta.url));
+    return scriptPath === modulePath;
+  } catch {
+    return false;
+  }
+}
+
+if (isCliEntry()) {
+  void main().then((code) => process.exit(code));
+}
