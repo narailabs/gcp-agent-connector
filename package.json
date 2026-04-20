@@ -30,7 +30,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@narai/connector-toolkit": "file:../connector-toolkit"
+    "@narai/connector-toolkit": "^1.0.0"
   },
   "devDependencies": {
     "@types/node": "^20.19.39",
