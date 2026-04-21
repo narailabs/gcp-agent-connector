@@ -1,7 +1,7 @@
 {
   "name": "@narai/gcp-agent-connector",
-  "version": "1.0.0",
-  "description": "Read-only GCP connector: Cloud Run, Cloud SQL, Pub/Sub, Cloud Logging. Shells out to gcloud/bq; ships a JSON-envelope CLI and a library API. Zero doc-wiki coupling.",
+  "version": "2.0.0",
+  "description": "Read-only GCP connector: Cloud Run, Cloud SQL, Pub/Sub, Cloud Logging. Shells out to gcloud/bq. Built on @narai/connector-toolkit with an approval gate and hardship logging. JSON-envelope CLI + library API.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -15,6 +15,17 @@
   "bin": {
     "gcp-agent-connector": "./dist/cli.js"
   },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/narailabs/gcp-agent-connector.git"
+  },
+  "bugs": {
+    "url": "https://github.com/narailabs/gcp-agent-connector/issues"
+  },
+  "homepage": "https://github.com/narailabs/gcp-agent-connector#readme",
   "engines": {
     "node": ">=20.0.0"
   },
@@ -30,7 +41,8 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@narai/connector-toolkit": "^1.0.0"
+    "@narai/connector-toolkit": "^2.0.0-rc.2",
+    "zod": "^3.23.0"
   },
   "devDependencies": {
     "@types/node": "^20.19.39",

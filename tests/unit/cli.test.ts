@@ -1,11 +1,11 @@
 /**
- * Tests for gcp_query and GcpClient.
+ * Tests for the GCP connector built on `@narai/connector-toolkit`.
  *
  * Child-process execution is mocked via an injected `runner` so no real
  * gcloud/bq binary is required.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fetch, VALID_ACTIONS } from "../../src/cli.js";
+import { buildGcpConnector } from "../../src/index.js";
 import {
   GcpClient,
   type GcpClientOptions,
@@ -37,6 +37,13 @@ function makeClient(
 
 function callsOf(client: GcpClient): RunnerCall[] {
   return (client as unknown as { _calls: RunnerCall[] })._calls;
+}
+
+function makeConnector(client: GcpClient) {
+  return buildGcpConnector({
+    sdk: async () => client,
+    credentials: async () => ({}),
+  });
 }
 
 describe("GcpClient", () => {
@@ -91,11 +98,7 @@ describe("GcpClient", () => {
 
   it("bq query rejects non-SELECT SQL", async () => {
     const client = makeClient("[]");
-    const r = await client.bqQuery(
-      "acme-prod-123",
-      "DROP TABLE foo",
-      10,
-    );
+    const r = await client.bqQuery("acme-prod-123", "DROP TABLE foo", 10);
     expect(r).toEqual(
       expect.objectContaining({ ok: false, code: "WRITE_FORBIDDEN" }),
     );
@@ -110,7 +113,7 @@ describe("GcpClient", () => {
     expect(call?.args).toContain("--project_id=acme-prod-123");
   });
 
-  it("bq query rejects multi-statement scripts that chain a DROP after SELECT", async () => {
+  it("bq query rejects multi-statement scripts that chain DROP after SELECT", async () => {
     const client = makeClient("[]");
     const r = await client.bqQuery(
       "acme-prod-123",
@@ -140,11 +143,12 @@ describe("GcpClient", () => {
   });
 });
 
-describe("gcp_query.fetch", () => {
+describe("gcp connector — fetch()", () => {
   beforeEach(() => vi.restoreAllMocks());
 
-  it("VALID_ACTIONS set", () => {
-    expect([...VALID_ACTIONS].sort()).toEqual([
+  it("exposes validActions", () => {
+    const c = buildGcpConnector();
+    expect([...c.validActions].sort()).toEqual([
       "describe_db",
       "list_services",
       "list_topics",
@@ -153,22 +157,22 @@ describe("gcp_query.fetch", () => {
   });
 
   it("validates project_id format", async () => {
-    const r = await fetch("list_services", { project_id: "BAD" });
-    expect(r["error_code"]).toBe("VALIDATION_ERROR");
+    const c = makeConnector(makeClient("[]"));
+    const r = await c.fetch("list_services", { project_id: "BAD" });
+    expect(r.status).toBe("error");
+    if (r.status === "error") expect(r.error_code).toBe("VALIDATION_ERROR");
   });
 
   it("uses injected client and shapes services response", async () => {
     const client = makeClient(
       '[{"name": "run.googleapis.com", "config": {"title": "Cloud Run"}, "state": "ENABLED"}]',
     );
-    const r = await fetch(
-      "list_services",
-      { project_id: "acme-prod-123" },
-      { client },
-    );
-    expect(r["status"]).toBe("success");
-    const data = r["data"] as Record<string, unknown>;
-    expect(data["service_count"]).toBe(1);
+    const c = makeConnector(client);
+    const r = await c.fetch("list_services", { project_id: "acme-prod-123" });
+    expect(r.status).toBe("success");
+    if (r.status === "success") {
+      expect(r.data["service_count"]).toBe(1);
+    }
   });
 
   it("describe_db splits engine/version from databaseVersion", async () => {
@@ -180,34 +184,45 @@ describe("gcp_query.fetch", () => {
         state: "RUNNABLE",
       }),
     );
-    const r = await fetch(
-      "describe_db",
-      {
-        project_id: "acme-prod-123",
-        instance_id: "main-db",
-        database: "primary",
-      },
-      { client },
-    );
-    const data = r["data"] as Record<string, unknown>;
-    expect(data["engine"]).toBe("mysql");
-    expect(data["version"]).toBe("8");
+    const c = makeConnector(client);
+    const r = await c.fetch("describe_db", {
+      project_id: "acme-prod-123",
+      instance_id: "main-db",
+      database: "primary",
+    });
+    expect(r.status).toBe("success");
+    if (r.status === "success") {
+      expect(r.data["engine"]).toBe("mysql");
+      expect(r.data["version"]).toBe("8");
+    }
   });
-});
 
-describe("envelope is wiki-agnostic (no Mermaid in Layer 1)", () => {
-  beforeEach(() => vi.restoreAllMocks());
+  it("returns CONFIG_ERROR when gcloud missing (simulated)", async () => {
+    const c = buildGcpConnector({
+      sdk: async () => {
+        const { GcpCliError } = await import("../../src/lib/gcp_error.js");
+        throw new GcpCliError("GCLOUD_MISSING", "gcloud CLI not available on PATH", false);
+      },
+      credentials: async () => ({}),
+    });
+    const r = await c.fetch("list_services", { project_id: "acme-prod-123" });
+    expect(r.status).toBe("error");
+    if (r.status === "error") {
+      expect(r.error_code).toBe("CONFIG_ERROR");
+      expect(r.retriable).toBe(false);
+      expect(r.message).toContain("gcloud");
+    }
+  });
 
-  it("list_services does NOT include a mermaid field", async () => {
+  it("envelope is wiki-agnostic — no mermaid field", async () => {
     const client = makeClient(
       '[{"name": "run.googleapis.com", "config": {"title": "Cloud Run"}, "state": "ENABLED"}]',
     );
-    const r = await fetch(
-      "list_services",
-      { project_id: "acme-prod-123" },
-      { client },
-    );
-    expect(r["status"]).toBe("success");
-    expect(r["mermaid"]).toBeUndefined();
+    const c = makeConnector(client);
+    const r = await c.fetch("list_services", { project_id: "acme-prod-123" });
+    expect(r.status).toBe("success");
+    if (r.status === "success") {
+      expect(r.data["mermaid"]).toBeUndefined();
+    }
   });
 });
