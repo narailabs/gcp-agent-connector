@@ -118,7 +118,12 @@ export function buildGcpConnector(overrides: BuildOptions = {}): Connector {
 
   return createConnector<GcpClient>({
     name: "gcp",
-    version: "2.0.0",
+    version: "3.0.0",
+    // TODO(scope): ideal key is `${projectId}/${region}` but GcpClient does not store
+    // these — they are passed per-call. Adding constructor-level defaults or inferring
+    // from `gcloud config get-value project` would produce a better tenant key.
+    // Use null (global tier) for now.
+    scope: () => null,
     credentials: overrides.credentials ?? defaultCredentials,
     sdk: overrides.sdk ?? defaultSdk,
     actions: {
