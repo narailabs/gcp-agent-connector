@@ -45,6 +45,8 @@ export interface GcpClientOptions {
   readTimeoutMs?: number;
   runner?: CommandRunner;
   sleepImpl?: (ms: number) => Promise<void>;
+  defaultProjectId?: string;
+  defaultRegion?: string;
 }
 
 export interface GcpErrorPayload {
@@ -66,6 +68,8 @@ export class GcpClient {
   private readonly _runner: CommandRunner;
   private readonly _sleep: (ms: number) => Promise<void>;
   private _timestamps: number[] = [];
+  private _defaultProjectId: string | null = null;
+  private _defaultRegion: string | null = null;
 
   constructor(opts: GcpClientOptions = {}) {
     this._rateLimitPerMin = opts.rateLimitPerMin ?? DEFAULT_RATE_LIMIT_PER_MIN;
@@ -75,6 +79,16 @@ export class GcpClient {
     this._sleep =
       opts.sleepImpl ??
       ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+    this._defaultProjectId = opts.defaultProjectId ?? null;
+    this._defaultRegion = opts.defaultRegion ?? null;
+  }
+
+  get defaultProjectId(): string | null {
+    return this._defaultProjectId;
+  }
+
+  get defaultRegion(): string | null {
+    return this._defaultRegion;
   }
 
   private async _throttle(): Promise<void> {

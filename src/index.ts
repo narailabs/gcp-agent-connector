@@ -97,6 +97,16 @@ export interface BuildOptions {
   credentials?: () => Promise<Record<string, unknown>>;
 }
 
+async function loadGcpDefaults(): Promise<{
+  defaultProjectId: string | null;
+  defaultRegion: string | null;
+}> {
+  return {
+    defaultProjectId: process.env["GCP_PROJECT_ID"] ?? null,
+    defaultRegion: process.env["GCP_REGION"] ?? null,
+  };
+}
+
 export function buildGcpConnector(overrides: BuildOptions = {}): Connector {
   const defaultCredentials = async (): Promise<Record<string, unknown>> => {
     // GCP uses Application Default Credentials via gcloud; no explicit secret load.
@@ -113,17 +123,24 @@ export function buildGcpConnector(overrides: BuildOptions = {}): Connector {
         false,
       );
     }
-    return new GcpClient();
+    const defaults = await loadGcpDefaults();
+    return new GcpClient({
+      ...(defaults.defaultProjectId
+        ? { defaultProjectId: defaults.defaultProjectId }
+        : {}),
+      ...(defaults.defaultRegion
+        ? { defaultRegion: defaults.defaultRegion }
+        : {}),
+    });
   };
 
   return createConnector<GcpClient>({
     name: "gcp",
     version: "3.0.0",
-    // TODO(scope): ideal key is `${projectId}/${region}` but GcpClient does not store
-    // these — they are passed per-call. Adding constructor-level defaults or inferring
-    // from `gcloud config get-value project` would produce a better tenant key.
-    // Use null (global tier) for now.
-    scope: () => null,
+    scope: (ctx) =>
+      ctx.sdk.defaultProjectId && ctx.sdk.defaultRegion
+        ? `${ctx.sdk.defaultProjectId}/${ctx.sdk.defaultRegion}`
+        : null,
     credentials: overrides.credentials ?? defaultCredentials,
     sdk: overrides.sdk ?? defaultSdk,
     actions: {
