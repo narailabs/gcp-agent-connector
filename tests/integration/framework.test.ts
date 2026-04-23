@@ -94,11 +94,13 @@ describe("hardship logging integration", () => {
       credentials: async () => ({}),
     });
     await c.fetch("list_services", { project_id: "BAD" });
+    // Toolkit 3.0 uses tiered layout: global/hardships.jsonl (validation errors → global tier).
     const logPath = path.join(
       tmpHome,
       ".claude",
       "connectors",
       "gcp",
+      "global",
       "hardships.jsonl",
     );
     expect(fs.existsSync(logPath)).toBe(true);
@@ -116,11 +118,13 @@ describe("hardship logging integration", () => {
       project_id: "acme-prod-123",
       filter: "severity=ERROR;rm -rf /",
     });
+    // Toolkit 3.0 uses tiered layout: global/hardships.jsonl (validation errors → global tier).
     const logPath = path.join(
       tmpHome,
       ".claude",
       "connectors",
       "gcp",
+      "global",
       "hardships.jsonl",
     );
     expect(fs.existsSync(logPath)).toBe(true);
