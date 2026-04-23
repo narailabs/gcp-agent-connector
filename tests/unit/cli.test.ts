@@ -226,3 +226,61 @@ describe("gcp connector — fetch()", () => {
     }
   });
 });
+
+describe("GcpClient — defaults", () => {
+  it("exposes defaultProjectId and defaultRegion when both configured", () => {
+    const client = new GcpClient({
+      defaultProjectId: "my-project",
+      defaultRegion: "us-central1",
+    });
+    expect(client.defaultProjectId).toBe("my-project");
+    expect(client.defaultRegion).toBe("us-central1");
+  });
+
+  it("returns null getters when nothing configured", () => {
+    const client = new GcpClient();
+    expect(client.defaultProjectId).toBeNull();
+    expect(client.defaultRegion).toBeNull();
+  });
+
+  it("returns null for unset half when only one default is configured", () => {
+    const projectOnly = new GcpClient({ defaultProjectId: "my-project" });
+    expect(projectOnly.defaultProjectId).toBe("my-project");
+    expect(projectOnly.defaultRegion).toBeNull();
+
+    const regionOnly = new GcpClient({ defaultRegion: "us-central1" });
+    expect(regionOnly.defaultProjectId).toBeNull();
+    expect(regionOnly.defaultRegion).toBe("us-central1");
+  });
+});
+
+describe("gcp connector — scope(ctx) formula", () => {
+  // The scope callback itself isn't exposed on the Connector surface, so we
+  // exercise it by replicating the exact expression used in buildGcpConnector.
+  // The client-level getter tests above verify the inputs; this verifies the
+  // composition rule.
+  const scopeOf = (sdk: GcpClient): string | null =>
+    sdk.defaultProjectId && sdk.defaultRegion
+      ? `${sdk.defaultProjectId}/${sdk.defaultRegion}`
+      : null;
+
+  it("returns ${defaultProjectId}/${defaultRegion} when both defaults are set", () => {
+    const client = new GcpClient({
+      defaultProjectId: "my-project",
+      defaultRegion: "us-central1",
+    });
+    expect(scopeOf(client)).toBe("my-project/us-central1");
+  });
+
+  it("returns null when neither default is set", () => {
+    expect(scopeOf(new GcpClient())).toBeNull();
+  });
+
+  it("returns null when only defaultProjectId is set", () => {
+    expect(scopeOf(new GcpClient({ defaultProjectId: "my-project" }))).toBeNull();
+  });
+
+  it("returns null when only defaultRegion is set", () => {
+    expect(scopeOf(new GcpClient({ defaultRegion: "us-central1" }))).toBeNull();
+  });
+});

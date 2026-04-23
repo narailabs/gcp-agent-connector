@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.0.1 — 2026-04-22
+
+### Added
+- `scope(ctx)` now returns `${defaultProjectId}/${defaultRegion}` when both are configured, and `null` otherwise. Hardships and patterns.yaml are now keyed by GCP project + region.
+- `GcpClient` accepts optional `defaultProjectId` and `defaultRegion` constructor fields.
+- `GcpClient` exposes `defaultProjectId: string | null` and `defaultRegion: string | null` getters.
+- `defaultSdk` reads `GCP_PROJECT_ID` and `GCP_REGION` env vars via a new internal `loadGcpDefaults()` helper.
+
 ## 3.0.0 — 2026-04-22
 
 ### BREAKING
