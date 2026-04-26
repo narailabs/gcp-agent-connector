@@ -1,6 +1,6 @@
 {
   "name": "@narai/gcp-agent-connector",
-  "version": "3.2.0",
+  "version": "3.2.1",
   "description": "Read-only GCP connector: Cloud Run, Cloud SQL, Pub/Sub, Cloud Logging. Shells out to gcloud/bq. Built on @narai/connector-toolkit with an approval gate and hardship logging. JSON-envelope CLI + library API.",
   "type": "module",
   "main": "./dist/index.js",
