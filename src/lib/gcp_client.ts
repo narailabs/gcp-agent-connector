@@ -156,13 +156,12 @@ export class GcpClient {
       });
       return { ok: true, data: stdout };
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      return {
-        ok: false,
-        code: /timeout/i.test(message) ? "TIMEOUT" : "EXEC_ERROR",
-        message,
-        retriable: /timeout|ECONNRESET/i.test(message),
-      };
+      const raw = err instanceof Error ? err.message : String(err);
+      // gcloud failures mostly come back from execFileSync as the entire stderr
+      // appended to a "Command failed: ..." preamble. Pull out the bit users
+      // actually want, classify common auth/credential failures separately
+      // from generic exec errors, and trim the noise.
+      return classifyGcloudError(raw);
     }
   }
 
@@ -448,6 +447,74 @@ function stripSqlStringLiterals(sql: string): string {
     i++;
   }
   return out;
+}
+
+/**
+ * Classify a raw error message from `gcloud` (as surfaced by execFileSync).
+ *
+ * `gcloud` writes structured ERROR lines to stderr — Node's execFileSync
+ * appends them to a "Command failed: …" preamble. The raw message is
+ * actionable for an interactive operator but verbose for an envelope:
+ * we'd rather emit a stable code (`AUTH_ERROR` / `NOT_FOUND` / `TIMEOUT` /
+ * `EXEC_ERROR`) and a normalized one-line message that points at the fix.
+ */
+function classifyGcloudError(raw: string): {
+  ok: false;
+  code: string;
+  message: string;
+  retriable: boolean;
+} {
+  if (/timeout/i.test(raw)) {
+    return { ok: false, code: "TIMEOUT", message: "gcloud command timed out", retriable: true };
+  }
+  // Auth failures — the most common gcloud failure mode and the one most worth
+  // distinguishing from a generic "exec error". gcloud emits stable phrases:
+  //   "You do not currently have an active account selected"
+  //   "Reauthentication required"
+  //   "Your credentials are invalid"
+  //   "Application Default Credentials are not available"
+  if (
+    /do not currently have an active account/i.test(raw) ||
+    /reauthentication/i.test(raw) ||
+    /credentials are invalid/i.test(raw) ||
+    /Application Default Credentials are not available/i.test(raw) ||
+    /Could not load (the )?default credentials/i.test(raw)
+  ) {
+    return {
+      ok: false,
+      code: "AUTH_ERROR",
+      message: "gcloud is not authenticated. Run `gcloud auth application-default login` or set GOOGLE_APPLICATION_CREDENTIALS.",
+      retriable: false,
+    };
+  }
+  // Not-found surfaces with stable strings as well — `(NOT_FOUND)` or
+  // "was not found" or "does not exist".
+  if (/\(NOT_FOUND\)|was not found|does not exist/i.test(raw)) {
+    const summary = (raw.split("\n").find((l) => /ERROR|NOT_FOUND/.test(l)) ?? "").trim();
+    return {
+      ok: false,
+      code: "NOT_FOUND",
+      message: summary || "gcloud reported NOT_FOUND",
+      retriable: false,
+    };
+  }
+  // Permission / quota / rate-limit
+  if (/PERMISSION_DENIED|forbidden/i.test(raw)) {
+    return { ok: false, code: "PERMISSION_DENIED", message: "gcloud reports permission denied", retriable: false };
+  }
+  if (/RATE_LIMIT|quota exceeded|RESOURCE_EXHAUSTED/i.test(raw)) {
+    return { ok: false, code: "RATE_LIMITED", message: "gcloud reports rate limit / quota exhausted", retriable: true };
+  }
+  // Generic fallback: keep the first ERROR line, drop the "Command failed: …"
+  // preamble. If no ERROR line, take the last non-empty line.
+  const lines = raw.split("\n").map((l) => l.trim()).filter(Boolean);
+  const errLine = lines.find((l) => l.startsWith("ERROR")) ?? lines[lines.length - 1] ?? raw;
+  return {
+    ok: false,
+    code: "EXEC_ERROR",
+    message: errLine.length > 240 ? errLine.slice(0, 237) + "…" : errLine,
+    retriable: /ECONNRESET/i.test(raw),
+  };
 }
 
 /** Detect whether gcloud/bq are available on PATH. Returns `null` on detection failure. */
